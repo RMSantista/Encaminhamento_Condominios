@@ -1,0 +1,11 @@
+# Credenciais — NUNCA versionar
+.clasp.json
+.clasprc.json
+
+# Node
+node_modules/
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db

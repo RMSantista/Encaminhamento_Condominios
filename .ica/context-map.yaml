@@ -1,0 +1,103 @@
+domains:
+
+  setup:
+    description: "Tudo necessário para o ambiente funcionar do zero"
+    fragments: [tooling-clasp, setup-clasp, github-setup, setup-triggers]
+    entry_point: setup-clasp
+    load_order: [tooling-clasp, setup-clasp, github-setup, setup-triggers]
+
+  core-logic:
+    description: "A lógica de negócio do repasse e do alerta"
+    fragments: [config-spec, repasse-spec, alerta-spec, email-spec, pdf-strategy, idempotency-decision]
+    entry_point: config-spec
+    load_order: [config-spec, idempotency-decision, pdf-strategy, email-spec, repasse-spec, alerta-spec]
+
+  quality:
+    description: "Testes e validação antes de colocar em produção"
+    fragments: [testing, config-spec, repasse-spec, alerta-spec]
+    entry_point: testing
+
+relationships:
+
+  - from: repasse-spec
+    to: config-spec
+    type: depends_on
+    note: "Toda string de negócio vem do config"
+
+  - from: repasse-spec
+    to: pdf-strategy
+    type: depends_on
+    note: "A estratégia de download define como extrairLinkBoleto e baixarPdf são implementados"
+
+  - from: repasse-spec
+    to: idempotency-decision
+    type: depends_on
+    note: "Verificação e criação de label são parte do fluxo principal"
+
+  - from: repasse-spec
+    to: email-spec
+    type: depends_on
+    note: "O corpo e assunto do e-mail são definidos na email-spec"
+
+  - from: alerta-spec
+    to: config-spec
+    type: depends_on
+    note: "CONTRATO_FIM e credenciais vêm do config"
+
+  - from: alerta-spec
+    to: idempotency-decision
+    type: depends_on
+    note: "Alerta verifica a ausência do label de repasse"
+
+  - from: setup-clasp
+    to: tooling-clasp
+    type: implements
+    note: "O guia de setup é a aplicação prática da decisão de usar clasp"
+
+  - from: setup-triggers
+    to: repasse-spec
+    type: references
+    note: "Os triggers chamam as funções definidas nas specs"
+
+  - from: setup-triggers
+    to: alerta-spec
+    type: references
+
+  - from: testing
+    to: repasse-spec
+    type: validates
+
+  - from: testing
+    to: alerta-spec
+    type: validates
+
+  - from: testing
+    to: config-spec
+    type: references
+    note: "DRY_RUN flag fica no config"
+
+task_routing:
+  "primeiro setup do projeto":
+    domain: setup
+    fragments: [tooling-clasp, setup-clasp, github-setup]
+
+  "implementar repassarBoleto":
+    domain: core-logic
+    fragments: [config-spec, pdf-strategy, idempotency-decision, email-spec, repasse-spec]
+
+  "implementar verificarPendencia":
+    domain: core-logic
+    fragments: [config-spec, idempotency-decision, alerta-spec]
+
+  "configurar triggers":
+    fragments: [setup-triggers]
+
+  "escrever testes":
+    domain: quality
+    fragments: [testing, config-spec, repasse-spec]
+
+  "preparar para o GitHub":
+    fragments: [github-setup, tooling-clasp]
+
+  "deploy e validação final":
+    fragments: [setup-triggers, testing]

@@ -1,0 +1,138 @@
+schema_version: "1.0.0"
+
+project:
+  name: "boleto-condominio-automation"
+  description: "Google Apps Script que detecta boleto da Premier no Gmail, baixa o PDF e repassa para a Pirâmid Imóveis com alerta de não-recebimento"
+  tech_stack: [google-apps-script, clasp, javascript, gmail-api, github]
+  language: pt-BR
+
+last_indexed: "2026-04-10T00:00:00Z"
+
+fragments:
+
+  # ── DECISIONS ──────────────────────────────────────────────────────────────
+
+  - id: "tooling-clasp"
+    type: decision
+    title: "Uso de clasp para versionamento do GAS"
+    summary: "Por que Google Apps Script + clasp é a stack correta: roda grátis na conta Google, tem acesso nativo a Gmail/Drive, e clasp permite desenvolvimento local versionado no GitHub sem precisar de servidor"
+    tags: [gas, clasp, arquitetura, github, setup]
+    token_count: 320
+    path: ".ica/fragments/decisions/tooling-clasp.md"
+    dependencies: []
+    priority: high
+    last_modified: "2026-04-10"
+
+  - id: "pdf-strategy"
+    type: decision
+    title: "Estratégia de download do PDF do boleto"
+    summary: "O botão no e-mail da Premier gera um link direto para PDF (não portal autenticado). Estratégia: extrair href do botão via regex no HTML do e-mail, baixar com UrlFetchApp, anexar ao e-mail de repasse como Blob"
+    tags: [pdf, premier, gmail, urlfetch, blob]
+    token_count: 280
+    path: ".ica/fragments/decisions/pdf-strategy.md"
+    dependencies: []
+    priority: high
+    last_modified: "2026-04-10"
+
+  - id: "idempotency-decision"
+    type: decision
+    title: "Controle de idempotência via Gmail labels"
+    summary: "Para garantir que o repasse nunca seja feito duas vezes no mesmo mês, usamos labels do Gmail como estado persistente: 'Condominio/Repassado-YYYY-MM'. Verificar label antes de agir; criar label após envio bem-sucedido"
+    tags: [idempotencia, gmail-labels, estado, segurança]
+    token_count: 240
+    path: ".ica/fragments/decisions/idempotency-decision.md"
+    dependencies: []
+    priority: high
+    last_modified: "2026-04-10"
+
+  # ── SPECIFICATIONS ──────────────────────────────────────────────────────────
+
+  - id: "config-spec"
+    type: specification
+    title: "Parâmetros de configuração (config.js)"
+    summary: "Todas as constantes do projeto: REMETENTE_PREMIER, ASSUNTO_PREMIER, DESTINO_IMOBILIARIA, LABEL_BASE, CONTRATO_FIM, TIMEZONE. Nenhuma string de negócio pode aparecer fora deste arquivo"
+    tags: [config, constantes, parametros, contrato]
+    token_count: 380
+    path: ".ica/fragments/specifications/config-spec.md"
+    dependencies: []
+    priority: high
+    last_modified: "2026-04-10"
+
+  - id: "repasse-spec"
+    type: specification
+    title: "Especificação de repassarBoleto()"
+    summary: "Função principal: busca e-mail da Premier no mês corrente, extrai link do PDF, baixa o arquivo, envia para a imobiliária com assunto/corpo padronizados, aplica label de controle. Roda via trigger diário"
+    tags: [repasse, gmail, pdf, trigger, logica-principal]
+    token_count: 620
+    path: ".ica/fragments/specifications/repasse-spec.md"
+    dependencies: [config-spec, pdf-strategy, idempotency-decision, email-spec]
+    priority: high
+    last_modified: "2026-04-10"
+
+  - id: "alerta-spec"
+    type: specification
+    title: "Especificação de verificarPendencia()"
+    summary: "Função de guarda: roda nos dias 8, 9 e 10 de cada mês. Se não existir label de repasse do mês corrente, envia e-mail de alerta ao dono da conta. Aborta silenciosamente após CONTRATO_FIM"
+    tags: [alerta, pendencia, trigger, dias-8-10]
+    token_count: 340
+    path: ".ica/fragments/specifications/alerta-spec.md"
+    dependencies: [config-spec, idempotency-decision]
+    priority: high
+    last_modified: "2026-04-10"
+
+  - id: "email-spec"
+    type: specification
+    title: "Especificação do e-mail de repasse"
+    summary: "Remetente: conta ativa do Gmail. Destinatário: administrativo@piramidimoveis.com.br. Assunto: 'Ajuste de Condomínio'. Corpo com A/C Mariana, competência do condomínio (mês X) e aluguel (mês X+1). PDF como anexo"
+    tags: [email, assunto, corpo, competencia, imobiliaria]
+    token_count: 290
+    path: ".ica/fragments/specifications/email-spec.md"
+    dependencies: [config-spec]
+    priority: high
+    last_modified: "2026-04-10"
+
+  # ── GUIDES ──────────────────────────────────────────────────────────────────
+
+  - id: "setup-clasp"
+    type: guide
+    title: "Setup do ambiente: clasp + GAS"
+    summary: "Passo a passo completo: instalar Node.js, instalar clasp, fazer clasp login, criar projeto GAS em script.google.com, obter scriptId, rodar clasp clone, verificar estrutura local. Inclui solução de problemas comuns"
+    tags: [setup, clasp, node, instalação, primeiro-uso]
+    token_count: 580
+    path: ".ica/fragments/guides/setup-clasp.md"
+    dependencies: [tooling-clasp]
+    priority: high
+    last_modified: "2026-04-10"
+
+  - id: "github-setup"
+    type: guide
+    title: "Setup do repositório GitHub"
+    summary: "Criar repo, configurar .gitignore (excluir .clasp.json com scriptId), estrutura de pastas src/, conteúdo do README.md profissional para portfólio. Inclui badges e seção de arquitetura"
+    tags: [github, git, repositorio, gitignore, readme, portfolio]
+    token_count: 490
+    path: ".ica/fragments/guides/github-setup.md"
+    dependencies: [tooling-clasp]
+    priority: medium
+    last_modified: "2026-04-10"
+
+  - id: "setup-triggers"
+    type: guide
+    title: "Configuração dos triggers no GAS"
+    summary: "Como criar os dois triggers via UI do GAS ou via código (installTriggers()): trigger diário para repassarBoleto() e trigger mensal nos dias 8-10 para verificarPendencia(). Inclui o código de setup dos triggers"
+    tags: [triggers, agendamento, gas, setup]
+    token_count: 410
+    path: ".ica/fragments/guides/setup-triggers.md"
+    dependencies: [repasse-spec, alerta-spec]
+    priority: high
+    last_modified: "2026-04-10"
+
+  - id: "testing"
+    type: guide
+    title: "Como testar o projeto"
+    summary: "Estratégia de testes: funções de teste unitário no GAS (testExtrairLink, testBaixarPdf, testCorpoEmail), como simular execução sem enviar e-mail real (DRY_RUN flag em config), como verificar logs no clasp e no GAS, checklist de validação pré-deploy"
+    tags: [testes, dry-run, validação, logs, qualidade]
+    token_count: 460
+    path: ".ica/fragments/guides/testing.md"
+    dependencies: [config-spec, repasse-spec, alerta-spec]
+    priority: medium
+    last_modified: "2026-04-10"
