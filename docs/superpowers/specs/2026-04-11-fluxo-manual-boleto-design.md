@@ -9,159 +9,229 @@
 
 Quando a Premier Garantidora não envia o boleto por e-mail, o usuário o recebe via
 WhatsApp, salva o PDF em uma pasta local sincronizada com o Google Drive (via Google
-Drive for Desktop) e precisa que a automação detecte, envie e remova esse arquivo
-automaticamente — sem intervenção adicional.
+Drive for Desktop). Além disso, a imobiliária pode solicitar reenvio de boletos já
+encaminhados. O sistema precisa cobrir ambos os cenários com rastreabilidade completa.
 
 ---
 
 ## Objetivo
 
-Implementar `verificarPastaManual()` em `src/manual.js`: função que monitora uma pasta
-do Google Drive nos dias 10 a 13 de cada mês (às 8h, 12h e 16h), envia o PDF encontrado
-para a imobiliária e move o arquivo para a lixeira. Compartilha o mesmo controle de
-idempotência de `repassarBoleto()` via Gmail label.
+1. Implementar `verificarPastaManual()` em `src/manual.js`: monitora pasta do Drive,
+   lê PDFs via OCR, envia um e-mail por boleto (ordem crescente de vencimento), move
+   arquivos processados para a lixeira.
+2. Extrair o valor do boleto via OCR também no fluxo de e-mail (`repassarBoleto()`),
+   unificando o formato de label entre os dois fluxos.
+3. Implementar `src/ocr.js`: módulo compartilhado de extração de dados via OCR.
+4. Implementar `src/log.js`: registro de todas as ações em Google Sheets na pasta
+   dos PDFs manuais.
 
 ---
 
-## Arquitetura
+## Formato do Label (unificado)
 
 ```
-verificarPastaManual()          [src/manual.js]
-│
-├── Guard: contrato expirado?              → return (log)
-├── Guard: dia fora de [10, 11, 12, 13]?  → return (log)
-├── Guard: label do mês já existe?        → return (log)
-├── Buscar PDFs na pasta do Drive         [DriveApp]
-│       └── pasta vazia?                 → return (log)
-├── Pegar primeiro PDF encontrado
-│       └── mais de 1 PDF?               → log de aviso (processa apenas o primeiro)
-├── Montar corpo do e-mail                [montarEmailRepasse() — repasse.js]
-├── Enviar e-mail com PDF como anexo      [GmailApp]
-├── Criar label de idempotência           [GmailApp.createLabel()]  ← label flutuante (sem thread)
-└── Mover PDF para a lixeira              [arquivo.setTrashed(true)]
+Condomínio_{mesRef}-{valorId}_{tipo}_em_{YYYY-MM-DD}_{origem}
+```
+
+| Parte      | Descrição                                              | Exemplo       |
+|------------|--------------------------------------------------------|---------------|
+| `mesRef`   | Mês de vencimento do boleto (YYYY-MM)                  | `2026-04`     |
+| `valorId`  | Valor do boleto sem separadores (R$ 593,72 → `59372`)  | `59372`       |
+| `tipo`     | `Enc` (primeiro envio) ou `Reenc` (reenvio)            | `Enc`         |
+| `YYYY-MM-DD` | Data em que o encaminhamento foi feito               | `2026-04-10`  |
+| `origem`   | `E` (e-mail Premier) ou `P` (pasta manual)             | `P`           |
+
+### Exemplos completos
+
+```
+Condomínio_2026-04-59372_Enc_em_2026-04-05_E    ← 1º envio via e-mail Premier
+Condomínio_2026-04-59372_Enc_em_2026-04-10_P    ← 1º envio via pasta (Premier não enviou)
+Condomínio_2026-04-59372_Reenc_em_2026-04-13_P  ← reenvio via pasta (imobiliária pediu)
+Condomínio_2026-03-47800_Reenc_em_2026-04-13_P  ← reenvio mês anterior via pasta
 ```
 
 ---
 
-## Idempotência compartilhada
+## Regras de Idempotência
 
-`verificarPastaManual()` cria o label `Condominio/Repassado-YYYY-MM` — o mesmo
-verificado por `repassarBoleto()`. Isso garante:
+### Fluxo E — `repassarBoleto()`
 
-- Se a Premier enviar o e-mail após repasse manual → `repassarBoleto()` encontra o
-  label e para.
-- Se `repassarBoleto()` já processou o e-mail da Premier → `verificarPastaManual()`
-  encontra o label e para.
-- Nunca haverá envio duplicado entre os dois fluxos.
+- Extrai `mesRef` e `valorId` via OCR do PDF baixado.
+- **Condição para enviar:** nenhum label com prefixo `Condomínio_{mesRef}-{valorId}` existe
+  (nem `_E` nem `_P`).
+- **Se envia:** cria label `Condomínio_{mesRef}-{valorId}_Enc_em_{hoje}_E` na thread da Premier.
+- **Nunca reenvia** por este fluxo.
 
-O label é month-scoped (`YYYY-MM`), portanto se reinicia automaticamente a cada mês.
+### Fluxo P — `verificarPastaManual()`
 
-**Label flutuante (sem thread):** No fluxo manual não há thread do Gmail para associar
-o label — o PDF vem do Drive, não de um e-mail recebido. O label é criado como marcador
-de controle sem mensagem vinculada. Isso é intencional e funcionalmente correto:
-`GmailApp.getUserLabelByName()` detecta o label independentemente de estar associado a
-uma thread. A ausência de mensagens vinculadas ao label em determinado mês indica que o
-repasse foi feito pelo fluxo manual (não pelo e-mail da Premier).
+- A presença do PDF na pasta é a autorização de envio.
+- Por PDF: verifica se existe label com prefixo `Condomínio_{mesRef}-{valorId}`.
+  - Não existe → `Enc`
+  - Existe → `Reenc`
+- Cria label flutuante (sem thread): `Condomínio_{mesRef}-{valorId}_{tipo}_em_{hoje}_P`.
+- Pode ser executado sem limite de vezes.
+
+### Busca de label por prefixo
+
+`GmailApp.getUserLabelByName()` exige nome exato — não serve para busca por prefixo.
+Usar `GmailApp.getUserLabels()` + `filter` pelo prefixo desejado:
+
+```javascript
+function labelExiste(prefixo) {
+  return GmailApp.getUserLabels()
+    .some(l => l.getName().startsWith(prefixo));
+}
+```
+
+---
+
+## Tratamento de Duplicatas (Fluxo P)
+
+Antes de enviar, agrupar PDFs da pasta por `(mesRef, valorId)`:
+
+### Duplicata total — mesmo mesRef E mesmo valorId
+
+Todos os arquivos do grupo são cópias idênticas do mesmo boleto.
+- Envia **apenas o primeiro** (por nome, ordem alfabética).
+- Move **todos** para a lixeira.
+- Cria **um único label** para o grupo.
+- Registra no log: `Ação = Enc/Reenc | Detalhes = "N cópias descartadas"`.
+
+### Duplicata parcial — mesmo mesRef, valorId diferente
+
+São boletos distintos para o mesmo mês de vencimento (cenário raro mas possível).
+- Envia um e-mail separado para **cada valorId**.
+- Cada um recebe seu próprio label com o `valorId` correspondente.
+- Ordem de envio: crescente por vencimento; em caso de empate, crescente por valor.
+
+---
+
+## OCR — `src/ocr.js`
+
+### Técnica
+
+Converter PDF em Google Doc via Drive API com `ocr: true`, ler o texto, apagar Doc temporário.
+Requer habilitar **Drive API** como serviço avançado no projeto GAS.
+
+```javascript
+function _extrairTexto(pdfBlob) {
+  const resource = { title: '_ocr_tmp', mimeType: 'application/vnd.google-apps.document' };
+  const file = Drive.Files.insert(resource, pdfBlob, { ocr: true, ocrLanguage: 'pt' });
+  const texto = DocumentApp.openById(file.id).getBody().getText();
+  DriveApp.getFileById(file.id).setTrashed(true);
+  return texto;
+}
+```
+
+### Campos extraídos e padrões (base: PDF Premier real)
+
+| Campo      | Regex                                              | Fonte no PDF               |
+|------------|----------------------------------------------------|----------------------------|
+| Premier?   | `/PREMIER GARANTIDORA/i`                           | Cabeçalho (página 1 e 2)   |
+| Condomínio?| `/CONDOMINIO RESIDENCIAL VIDA PLENA/i`             | Beneficiário               |
+| Vencimento | `/Vencimento[:\s]+(\d{2}\/\d{2}\/\d{4})/i`        | Página 2 (forma mais limpa) |
+| Valor      | `/Valor do documento\s*[\r\n]+([\d.,]+)/i`         | Bloco do boleto (página 1)  |
+
+`valorId` = valor sem separadores: `"593,72".replace(/[.,]/g, '')` → `"59372"`.
+
+`mesRef` = derivado do vencimento: vencimento `13/04/2026` → `2026-04`.
+
+### Alerta por falha de OCR
+
+Se `isPremier === false` ou `vencimento` não extraído:
+
+```javascript
+GmailApp.sendEmail(
+  Session.getActiveUser().getEmail(),
+  `⚠️ OCR falhou — ${arquivo.getName()}`,
+  `Não foi possível identificar o arquivo como boleto da Premier ou extrair a data de vencimento.\n\nArquivo: ${arquivo.getName()}\nProblema: ${motivo}\n\nVerifique manualmente.`
+);
+```
+
+O arquivo **não** é movido para a lixeira. Permanece na pasta para intervenção manual.
+
+---
+
+## Log — `src/log.js`
+
+### Localização
+
+Planilha Google Sheets criada automaticamente na primeira execução dentro de `PASTA_MANUAL_ID`.
+Nome configurável em `config.js` (`LOG_PLANILHA_NOME`). ID da planilha salvo em
+`PropertiesService` para não precisar buscar por nome a cada execução.
+
+### Colunas
+
+| Coluna      | Tipo     | Exemplo                        |
+|-------------|----------|--------------------------------|
+| `Timestamp` | DateTime | `2026-04-10 08:02:31`          |
+| `Função`    | String   | `verificarPastaManual`         |
+| `MesRef`    | String   | `2026-04`                      |
+| `ValorId`   | String   | `59372`                        |
+| `Arquivo`   | String   | `boleto_abril.pdf` / `—`       |
+| `Ação`      | String   | `Enc` / `Reenc` / `Skip` / `Alerta` / `ErrOCR` |
+| `Origem`    | String   | `E` / `P`                      |
+| `Detalhes`  | String   | `OK` / `Label P já existe` / `2 cópias descartadas` |
+
+**Ambos os fluxos** (E e P) registram nesta planilha.
+
+### API
+
+```javascript
+function registrarLog({ funcao, mesRef, valorId, arquivo, acao, origem, detalhes }) { ... }
+```
 
 ---
 
 ## Alterações por arquivo
 
-### `src/config.js`
-
-Duas constantes novas:
+### `src/config.js` — novas constantes
 
 ```javascript
 // ── Fluxo manual (boleto via WhatsApp → pasta Drive) ────────────
 // ID obtido da URL ao abrir a pasta no Drive: drive.google.com/drive/folders/{ID}
 const PASTA_MANUAL_ID         = '1-LITJk2RHnlXPwrMy_XwhsLFzTZjqVRu';
 const DIAS_VERIFICACAO_MANUAL = [10, 11, 12, 13];
+
+// ── Log ──────────────────────────────────────────────────────────
+const LOG_PLANILHA_NOME = 'Log_Condominio_Automacao';
 ```
+
+### `src/ocr.js` (novo)
+
+Exporta:
+- `extrairDadosBoleto(pdfBlob, nomeArquivo)` → `{ mesRef, valorId, vencimento, valor }` ou lança erro com `sendEmail` de alerta.
+
+### `src/log.js` (novo)
+
+Exporta:
+- `registrarLog(dados)` → localiza ou cria planilha, adiciona linha.
 
 ### `src/manual.js` (novo)
 
-```javascript
-function verificarPastaManual() {
-  if (new Date() > new Date(CONTRATO_FIM)) {
-    Logger.log('Contrato encerrado. verificarPastaManual() abortado.');
-    return;
-  }
+Exporta:
+- `verificarPastaManual()` — fluxo completo descrito acima.
 
-  const hoje   = new Date();
-  const dia    = Number(Utilities.formatDate(hoje, TIMEZONE, 'd'));
-  const mesRef = Utilities.formatDate(hoje, TIMEZONE, 'yyyy-MM');
+### `src/repasse.js` — mudanças
 
-  if (!DIAS_VERIFICACAO_MANUAL.includes(dia)) {
-    Logger.log(`Dia ${dia}: fora do período de verificação manual. Nenhuma ação.`);
-    return;
-  }
+1. `repassarBoleto()`: após baixar PDF, chama `extrairDadosBoleto()` para obter `mesRef`
+   e `valorId`; usa label unificado; registra no log.
+2. `installTriggers()`: atualizado para 5 triggers (ver abaixo).
 
-  const labelNome = `${LABEL_BASE}-${mesRef}`;
-  if (GmailApp.getUserLabelByName(labelNome)) {
-    Logger.log(`Boleto de ${mesRef} já repassado. verificarPastaManual() encerrado.`);
-    return;
-  }
-
-  const pasta    = DriveApp.getFolderById(PASTA_MANUAL_ID);
-  const arquivos = pasta.getFilesByType(MimeType.PDF);
-
-  if (!arquivos.hasNext()) {
-    Logger.log(`Pasta manual vazia em ${mesRef} dia ${dia}. Aguardando PDF.`);
-    return;
-  }
-
-  const arquivo = arquivos.next();
-
-  // Aviso se houver mais de 1 PDF — apenas o primeiro será processado este mês
-  if (arquivos.hasNext()) {
-    Logger.log(`AVISO: mais de 1 PDF encontrado na pasta. Apenas "${arquivo.getName()}" será processado. Remova os demais manualmente.`);
-  }
-
-  const pdfBlob = arquivo.getBlob().setName(arquivo.getName());
-  const { assunto, corpo } = montarEmailRepasse(mesRef);
-
-  if (DRY_RUN) {
-    Logger.log(`[DRY_RUN] Enviaria "${arquivo.getName()}" para ${DESTINO_IMOBILIARIA}`);
-  } else {
-    GmailApp.sendEmail(DESTINO_IMOBILIARIA, assunto, corpo, {
-      attachments: [pdfBlob],
-      name: 'Automação Condomínio'
-    });
-    Logger.log(`PDF manual "${arquivo.getName()}" repassado para ${DESTINO_IMOBILIARIA}`);
-
-    // Label flutuante (sem thread) — funciona como marcador de controle mensal
-    GmailApp.createLabel(labelNome);
-
-    arquivo.setTrashed(true);
-    Logger.log(`"${arquivo.getName()}" movido para a lixeira.`);
-  }
-}
-```
-
-### `src/appsscript.json`
-
-Adicionar scope do Drive:
+### `src/appsscript.json` — escopos adicionados
 
 ```json
-"https://www.googleapis.com/auth/drive"
+"https://www.googleapis.com/auth/drive",
+"https://www.googleapis.com/auth/spreadsheets"
 ```
 
-**Nota sobre escopo:** `https://www.googleapis.com/auth/drive` concede acesso completo
-de leitura/escrita ao Drive. O GAS não oferece um escopo mais restrito que cubra
-`DriveApp.getFolderById()` combinado com `file.setTrashed(true)` em arquivos arbitrários
-do usuário. O escopo é portanto o mínimo tecnicamente possível para esta operação.
-
-### `src/repasse.js` — `installTriggers()` completo atualizado
-
-`installTriggers()` apaga todos os triggers existentes antes de recriar. O corpo
-completo após a adição dos 3 novos triggers (total: 5):
+### `src/repasse.js` — `installTriggers()` completo (5 triggers)
 
 ```javascript
 function installTriggers() {
-  // Remove todos os triggers existentes para evitar duplicatas
   ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
 
-  // T1 — repasse diário (6h–7h)
+  // T1 — repasse via e-mail diário (6h–7h)
   ScriptApp.newTrigger('repassarBoleto')
     .timeBased().everyDays(1).atHour(6).create();
 
@@ -172,49 +242,65 @@ function installTriggers() {
   // T3/T4/T5 — verificação da pasta manual (dias 10-13, 8h / 12h / 16h)
   ScriptApp.newTrigger('verificarPastaManual')
     .timeBased().everyDays(1).atHour(8).create();
-
   ScriptApp.newTrigger('verificarPastaManual')
     .timeBased().everyDays(1).atHour(12).create();
-
   ScriptApp.newTrigger('verificarPastaManual')
     .timeBased().everyDays(1).atHour(16).create();
 
-  Logger.log('Triggers instalados com sucesso.');
-  ScriptApp.getProjectTriggers().forEach(t => {
-    Logger.log(`  - ${t.getHandlerFunction()} (${t.getTriggerSource()})`);
-  });
+  Logger.log('Triggers instalados: 5');
+  ScriptApp.getProjectTriggers().forEach(t =>
+    Logger.log(`  - ${t.getHandlerFunction()} @ ${t.getTriggerSource()}`)
+  );
 }
 ```
 
-Total de triggers: 5 (limite do GAS: 20).
+Total: 5 triggers (limite GAS: 20).
+
+---
+
+## Arquitetura de chamadas
+
+```
+repassarBoleto()          [repasse.js]
+├── buscarBoletoPremer()  [gmail.js]
+├── extrairLinkBoleto()   [gmail.js]
+├── baixarPdf()           [pdf.js]
+├── extrairDadosBoleto()  [ocr.js]   ← NOVO
+├── montarEmailRepasse()  [repasse.js]
+├── labelExiste()         [repasse.js]
+└── registrarLog()        [log.js]   ← NOVO
+
+verificarPastaManual()    [manual.js]
+├── extrairDadosBoleto()  [ocr.js]
+├── montarEmailRepasse()  [repasse.js]
+├── labelExiste()         [repasse.js ou util]
+└── registrarLog()        [log.js]
+```
 
 ---
 
 ## Tratamento de erros
 
-- **Pasta não encontrada** → GAS lança exceção nativa; o trigger registra o erro em
-  Execuções e tenta novamente no próximo horário agendado.
-- **Múltiplos PDFs na pasta** → apenas o primeiro é processado; os demais permanecem
-  na pasta indefinidamente (idempotência impede reenvio após o primeiro envio no mês).
-  Um `Logger.log` de aviso orienta o usuário a remover os arquivos extras manualmente.
-- **Falha no envio do e-mail** → label não é criado, arquivo não vai para a lixeira;
-  próxima execução agendada tentará novamente.
+| Situação | Comportamento |
+|---|---|
+| OCR falha em identificar Premier | Alerta e-mail; arquivo permanece na pasta |
+| OCR não extrai vencimento | Alerta e-mail; arquivo permanece na pasta |
+| Pasta Drive não encontrada | GAS lança exceção; registrado em Execuções |
+| Falha no envio do e-mail | Label não criado; arquivo não vai para lixeira; próxima execução tenta novamente |
+| Múltiplas cópias idênticas | Envia 1, exclui todas, log registra quantidade descartada |
 
 ---
 
 ## Verificação e testes
 
-**Restrição de data:** `verificarPastaManual()` só age nos dias 10–13. Para testar fora
-desse período, altere temporariamente `DIAS_VERIFICACAO_MANUAL` para incluir o dia atual
-(ex: `[1, 2, ..., 31]`) e restaure após o teste.
-
 1. Setar `DRY_RUN = true` em `config.js`
-2. Colocar um PDF de teste na pasta Drive sincronizada
-3. Garantir que o dia atual está em `DIAS_VERIFICACAO_MANUAL` (ajustar se necessário)
-4. Executar `verificarPastaManual()` manualmente no editor do GAS
-5. Verificar log: `[DRY_RUN] Enviaria "nome.pdf" para administrativo@piramidimoveis.com.br`
-6. Confirmar que o arquivo **não** foi para a lixeira (DRY_RUN não deleta)
+2. Colocar PDF de teste na pasta Drive
+3. Garantir que o dia atual está em `DIAS_VERIFICACAO_MANUAL` (ajustar se necessário para teste)
+4. Executar `verificarPastaManual()` manualmente no editor GAS
+5. Verificar log: linha `Enc | P | [DRY_RUN]` na planilha
+6. Verificar que o arquivo **não** foi para a lixeira (DRY_RUN não deleta)
 7. Setar `DRY_RUN = false`, executar novamente
-8. Verificar: e-mail chegou, arquivo na lixeira, label `Condominio/Repassado-YYYY-MM` criado
-9. Executar uma terceira vez → log: `Boleto de YYYY-MM já repassado. verificarPastaManual() encerrado.`
-10. Executar `installTriggers()` para ativar os 5 triggers
+8. Verificar: e-mail chegou, arquivo na lixeira, label criado, linha no log
+9. Executar uma terceira vez → log: `Reenc | P`
+10. Executar `repassarBoleto()` → log: `Skip | E | Label P já existe`
+11. Executar `installTriggers()` para ativar os 5 triggers

@@ -19,9 +19,9 @@ function verificarPendencia() {
     return;
   }
 
-  // Checa se o repasse já foi feito
-  const labelNome = `${LABEL_BASE}-${mesRef}`;
-  if (GmailApp.getUserLabelByName(labelNome)) {
+  // Checa se houve qualquer repasse no mês (via E ou P, qualquer valorId)
+  const prefixoMes = `${LABEL_PREFIXO}_${mesRef}`;
+  if (labelExiste(prefixoMes)) {
     Logger.log(`Repasse de ${mesRef} confirmado. Nenhum alerta necessário.`);
     return;
   }

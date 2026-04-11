@@ -1,55 +1,64 @@
 /**
- * Função principal: detecta boleto da Premier e repassa para a imobiliária.
+ * Função principal: detecta boleto da Premier no Gmail e repassa para a imobiliária.
  * Roda via trigger diário. Idempotente via Gmail labels.
  */
 function repassarBoleto() {
-  // Guard 1: contrato
+  // Guard: contrato
   if (new Date() > new Date(CONTRATO_FIM)) {
     Logger.log('Contrato encerrado. repassarBoleto() abortado.');
     return;
   }
 
-  const hoje    = new Date();
-  const mesRef  = Utilities.formatDate(hoje, TIMEZONE, 'yyyy-MM');
-  const labelNome = `${LABEL_BASE}-${mesRef}`;
-
-  // Guard 2: idempotência
-  if (GmailApp.getUserLabelByName(labelNome)) {
-    Logger.log(`Boleto de ${mesRef} já repassado. Nenhuma ação.`);
-    return;
-  }
-
-  // Busca
-  const threads = buscarBoletoPremer(mesRef);   // gmail.js
+  // Busca e-mail Premier do mês atual para localizar a thread
+  const mesAtual = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM');
+  const threads  = buscarBoletoPremer(mesAtual);
   if (!threads.length) {
-    Logger.log(`Boleto da Premier de ${mesRef} não encontrado ainda.`);
+    Logger.log(`Boleto da Premier de ${mesAtual} não encontrado ainda.`);
     return;
   }
 
-  const thread = threads[0];
-  const html   = thread.getMessages().pop().getBody();
+  const thread  = threads[0];
+  const html    = thread.getMessages().pop().getBody();
+  const linkPdf = extrairLinkBoleto(html);
+  const pdfBlob = baixarPdf(linkPdf);
 
-  // PDF
-  const linkPdf = extrairLinkBoleto(html);      // gmail.js
-  const pdfBlob = baixarPdf(linkPdf);           // pdf.js
+  // OCR: extrai mesRef e valorId reais do boleto
+  let dados;
+  try {
+    dados = extrairDadosBoleto(pdfBlob, `e-mail Premier ${mesAtual}`);
+  } catch (e) {
+    Logger.log(`repassarBoleto: erro OCR — ${e.message}`);
+    registrarLog({ funcao: 'repassarBoleto', mesRef: mesAtual, acao: 'ErrOCR', origem: 'E', detalhes: e.message });
+    return;
+  }
 
-  // E-mail
-  const { assunto, corpo } = montarEmailRepasse(mesRef);
+  // Guard: idempotência — prefixo cobre _E e _P do mesmo boleto
+  const prefixo = construirPrefixo(dados.mesRef, dados.valorId);
+  if (labelExiste(prefixo)) {
+    Logger.log(`Boleto ${dados.mesRef} (valorId: ${dados.valorId}) já repassado. Nenhuma ação.`);
+    registrarLog({ funcao: 'repassarBoleto', mesRef: dados.mesRef, valorId: dados.valorId, acao: 'Skip', origem: 'E', detalhes: 'Label já existe (E ou P)' });
+    return;
+  }
+
+  const labelNome          = construirLabel(dados.mesRef, dados.valorId, 'Enc', 'E');
+  const { assunto, corpo } = montarEmailRepasse(dados.mesRef);
 
   if (DRY_RUN) {
     Logger.log(`[DRY_RUN] Enviaria para ${DESTINO_IMOBILIARIA}: "${assunto}"`);
-    Logger.log(`[DRY_RUN] Corpo: ${corpo}`);
+    Logger.log(`[DRY_RUN] Label que seria criado: ${labelNome}`);
+    registrarLog({ funcao: 'repassarBoleto', mesRef: dados.mesRef, valorId: dados.valorId, acao: 'Enc', origem: 'E', detalhes: '[DRY_RUN]' });
   } else {
     GmailApp.sendEmail(DESTINO_IMOBILIARIA, assunto, corpo, {
       attachments: [pdfBlob],
       name: 'Automação Condomínio'
     });
-    Logger.log(`Boleto de ${mesRef} repassado com sucesso para ${DESTINO_IMOBILIARIA}`);
+    Logger.log(`Boleto ${dados.mesRef} repassado para ${DESTINO_IMOBILIARIA}`);
 
-    // Aplica label apenas após envio confirmado
-    const label = GmailApp.getUserLabelByName(labelNome)
-      || GmailApp.createLabel(labelNome);
+    // Label aplicado à thread da Premier após envio confirmado
+    const label = GmailApp.createLabel(labelNome);
     label.addToThread(thread);
+    Logger.log(`Label criado na thread: ${labelNome}`);
+    registrarLog({ funcao: 'repassarBoleto', mesRef: dados.mesRef, valorId: dados.valorId, acao: 'Enc', origem: 'E', detalhes: 'OK' });
   }
 }
 
@@ -60,11 +69,10 @@ function repassarBoleto() {
  * @returns {{ assunto: string, corpo: string }}
  */
 function montarEmailRepasse(mesRef) {
-  const [ano, mes]    = mesRef.split('-').map(Number);
-  const proxMes       = mes === 12 ? `${ano + 1}-01` : `${ano}-${String(mes + 1).padStart(2, '0')}`;
-  const nomeMes       = nomeMesPortugues(mes);
-  const nomeProxMes   = nomeMesPortugues(mes === 12 ? 1 : mes + 1);
-  const anoProxMes    = mes === 12 ? ano + 1 : ano;
+  const [ano, mes]   = mesRef.split('-').map(Number);
+  const nomeMes      = nomeMesPortugues(mes);
+  const nomeProxMes  = nomeMesPortugues(mes === 12 ? 1 : mes + 1);
+  const anoProxMes   = mes === 12 ? ano + 1 : ano;
 
   const corpo = `A/C Mariana - Setor de Proprietários.
 
@@ -76,30 +84,63 @@ Atenciosamente.`;
 }
 
 /**
- * Instala os dois triggers de tempo. Executar manualmente UMA vez no GAS.
+ * Instala os triggers de tempo. Executar manualmente UMA vez no GAS.
  */
 function installTriggers() {
-  // Remove triggers existentes para evitar duplicatas
   ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
 
-  // Trigger diário para repasse (janela: 6h–7h da manhã)
+  // T1 — repasse via e-mail diário (6h–7h)
   ScriptApp.newTrigger('repassarBoleto')
-    .timeBased()
-    .everyDays(1)
-    .atHour(6)
-    .create();
+    .timeBased().everyDays(1).atHour(6).create();
 
-  // Trigger diário para alerta (janela: 8h–9h da manhã)
+  // T2 — alerta de pendência diário (8h–9h)
   ScriptApp.newTrigger('verificarPendencia')
-    .timeBased()
-    .everyDays(1)
-    .atHour(8)
-    .create();
+    .timeBased().everyDays(1).atHour(8).create();
 
-  Logger.log('Triggers instalados com sucesso.');
-  ScriptApp.getProjectTriggers().forEach(t => {
-    Logger.log(`  - ${t.getHandlerFunction()} (${t.getTriggerSource()})`);
-  });
+  // T3/T4/T5 — verificação da pasta manual (dias 10-13, 3× ao dia)
+  ScriptApp.newTrigger('verificarPastaManual')
+    .timeBased().everyDays(1).atHour(8).create();
+
+  ScriptApp.newTrigger('verificarPastaManual')
+    .timeBased().everyDays(1).atHour(12).create();
+
+  ScriptApp.newTrigger('verificarPastaManual')
+    .timeBased().everyDays(1).atHour(16).create();
+
+  Logger.log('Triggers instalados: 5');
+  ScriptApp.getProjectTriggers().forEach(t =>
+    Logger.log(`  - ${t.getHandlerFunction()} (${t.getTriggerSource()})`)
+  );
+}
+
+// ── Helpers de label (escopo global GAS — usados por manual.js e alerta.js) ──
+
+/**
+ * Constrói o nome completo do label.
+ * Formato: {LABEL_PREFIXO}_{mesRef}-{valorId}_{tipo}_em_{YYYY-MM-DD}_{origem}
+ * Exemplo: Condomínio_2026-04-59372_Enc_em_2026-04-10_E
+ */
+function construirLabel(mesRef, valorId, tipo, origem) {
+  const hoje = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM-dd');
+  return `${LABEL_PREFIXO}_${mesRef}-${valorId}_${tipo}_em_${hoje}_${origem}`;
+}
+
+/**
+ * Constrói o prefixo de busca para idempotência.
+ * Cobre _E e _P do mesmo boleto (mesmo mesRef + valorId).
+ * Exemplo: Condomínio_2026-04-59372
+ */
+function construirPrefixo(mesRef, valorId) {
+  return `${LABEL_PREFIXO}_${mesRef}-${valorId}`;
+}
+
+/**
+ * Verifica se existe algum label com o prefixo dado.
+ * @param {string} prefixo
+ * @returns {boolean}
+ */
+function labelExiste(prefixo) {
+  return GmailApp.getUserLabels().some(l => l.getName().startsWith(prefixo));
 }
 
 // ── Utilitário ──────────────────────────────────────────────────

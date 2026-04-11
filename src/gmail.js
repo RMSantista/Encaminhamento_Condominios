@@ -24,9 +24,9 @@ function extrairLinkBoleto(html) {
   // Tenta link terminando em .pdf
   let match = html.match(/href="(https?:\/\/[^"]+\.pdf[^"]*)"/i);
 
-  // Fallback: link com texto âncora "Visualizar Boleto"
+  // Fallback: link com texto âncora "Visualizar Boleto" ou "Ver boleto"
   if (!match) {
-    match = html.match(/href="(https?:\/\/[^"]+)"[^>]*>\s*Visualizar Boleto/i);
+    match = html.match(/href="(https?:\/\/[^"]+)"[^>]*>\s*(?:Visualizar Boleto|Ver boleto)/i);
   }
 
   if (!match || !match[1]) {
