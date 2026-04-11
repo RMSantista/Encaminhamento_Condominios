@@ -1,16 +1,20 @@
 /**
  * Função principal: detecta boleto da Premier no Gmail e repassa para a imobiliária.
  * Roda via trigger diário. Idempotente via Gmail labels.
+ *
+ * @param {string} [mesOverride] - Opcional. Formato 'yyyy-MM'. Usar para reprocessar
+ *   meses retroativos manualmente (ex: repassarBoleto('2026-02')). Se omitido,
+ *   usa o mês atual — comportamento normal do trigger.
  */
-function repassarBoleto() {
+function repassarBoleto(mesOverride) {
   // Guard: contrato
   if (new Date() > new Date(CONTRATO_FIM)) {
     Logger.log('Contrato encerrado. repassarBoleto() abortado.');
     return;
   }
 
-  // Busca e-mail Premier do mês atual para localizar a thread
-  const mesAtual = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM');
+  // Busca e-mail Premier do mês indicado (ou mês atual pelo trigger)
+  const mesAtual = mesOverride || Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM');
   const threads  = buscarBoletoPremer(mesAtual);
   if (!threads.length) {
     Logger.log(`Boleto da Premier de ${mesAtual} não encontrado ainda.`);
