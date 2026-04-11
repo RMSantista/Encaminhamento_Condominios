@@ -1,4 +1,4 @@
-# boleto-condominio-automation
+# Encaminhamento_Condominios
 
 Automação em Google Apps Script para recebimento e repasse mensal do boleto de
 condomínio da seguradora Premier para a imobiliária Pirâmid Imóveis, com alerta
@@ -38,7 +38,7 @@ projeto está em fragmentos atômicos indexados em `.ica/`. Nunca assuma context
 ## Estrutura do projeto
 
 ```
-boleto-condominio-automation/
+Encaminhamento_Condominios/
 ├── CLAUDE.md                        ← você está aqui
 ├── .ica/
 │   ├── manifest.yaml                ← índice de todos os fragmentos

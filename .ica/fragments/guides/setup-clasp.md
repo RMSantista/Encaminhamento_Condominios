@@ -33,14 +33,14 @@ Credenciais salvas em `~/.clasprc.json` (global, não versionado).
 
 1. Acesse [script.google.com](https://script.google.com)
 2. Clique em **Novo projeto**
-3. Renomeie para `boleto-condominio-automation`
+3. Renomeie para `Encaminhamento_Condominios`
 4. Copie o **Script ID** da URL: `https://script.google.com/d/{SCRIPT_ID}/edit`
 
 ## Passo 4 — Criar a estrutura local
 
 ```bash
-mkdir boleto-condominio-automation
-cd boleto-condominio-automation
+mkdir Encaminhamento_Condominios
+cd Encaminhamento_Condominios
 git init
 ```
 

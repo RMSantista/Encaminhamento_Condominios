@@ -28,7 +28,7 @@ Thumbs.db
 ## Estrutura final do repositório
 
 ```
-boleto-condominio-automation/
+Encaminhamento_Condominios/
 ├── CLAUDE.md
 ├── README.md
 ├── .gitignore
@@ -51,7 +51,7 @@ boleto-condominio-automation/
 ## README.md para portfólio
 
 ```markdown
-# 📬 Boleto Condomínio Automation
+# Encaminhamento_Condominios
 
 Automação em **Google Apps Script** que monitora o Gmail, detecta o boleto
 mensal de condomínio enviado pela seguradora Premier e o repassa automaticamente
@@ -106,7 +106,7 @@ MIT
 
 ```bash
 # Após criar o repo no github.com:
-git remote add origin https://github.com/SEU_USUARIO/boleto-condominio-automation.git
+git remote add origin https://github.com/RMSantista/Encaminhamento_Condominios.git
 git add .
 git commit -m "feat: estrutura inicial ICA + SPEC kit"
 git push -u origin main

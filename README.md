@@ -1,4 +1,4 @@
-# Boleto Condomínio Automation
+# Encaminhamento_Condominios
 
 Automação em **Google Apps Script** que monitora o Gmail, detecta o boleto
 mensal de condomínio enviado pela seguradora Premier e o repassa automaticamente
