@@ -97,9 +97,9 @@ function installTriggers() {
   ScriptApp.newTrigger('repassarBoleto')
     .timeBased().everyDays(1).atHour(6).create();
 
-  // T2 — alerta de pendência diário (8h–9h)
+  // T2 — verificação de pendência diária ao meio-dia (alerta só no dia 10)
   ScriptApp.newTrigger('verificarPendencia')
-    .timeBased().everyDays(1).atHour(8).create();
+    .timeBased().everyDays(1).atHour(12).create();
 
   // T3/T4/T5 — verificação da pasta manual (dias 10-13, 3× ao dia)
   ScriptApp.newTrigger('verificarPastaManual')

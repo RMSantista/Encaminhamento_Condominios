@@ -24,7 +24,8 @@ const TIMEZONE  = 'America/Sao_Paulo';
 const DRY_RUN   = false;  // true = executa tudo mas NÃO envia e-mail (para testes)
 
 // ── Dias de verificação de pendência ────────────────────────────
-const DIAS_VERIFICACAO = [8, 9, 10];  // verificarPendencia() age nesses dias
+const DIAS_VERIFICACAO = [8, 9, 10];  // verificarPendencia() verifica nesses dias
+const DIA_ALERTA       = 10;          // alerta só é enviado a partir deste dia (ao meio-dia)
 
 // ── Fluxo manual (boleto via WhatsApp → pasta Drive) ────────────
 // ID obtido da URL ao abrir a pasta no Drive: drive.google.com/drive/folders/{ID}
