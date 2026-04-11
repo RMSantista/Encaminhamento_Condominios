@@ -93,9 +93,9 @@ Atenciosamente.`;
 function installTriggers() {
   ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
 
-  // T1 — repasse via e-mail diário (6h–7h)
+  // T1 — repasse via e-mail diário (16h–17h)
   ScriptApp.newTrigger('repassarBoleto')
-    .timeBased().everyDays(1).atHour(6).create();
+    .timeBased().everyDays(1).atHour(16).create();
 
   // T2 — verificação de pendência diária ao meio-dia (alerta só no dia 10)
   ScriptApp.newTrigger('verificarPendencia')
