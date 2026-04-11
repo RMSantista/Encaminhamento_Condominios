@@ -3,7 +3,7 @@
   "dependencies": {
     "enabledAdvancedServices": [
       {
-        "userSymbol": "Drive",
+        "userSymbol": "Drive_OCR",
         "serviceId": "drive",
         "version": "v2"
       }

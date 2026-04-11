@@ -58,7 +58,7 @@ function _extrairTextoPdf(pdfBlob, nomeArquivo) {
   let docId = null;
 
   try {
-    const file = Drive.Files.insert(resource, pdfBlob, {
+    const file = Drive_OCR.Files.insert(resource, pdfBlob, {
       ocr: true,
       ocrLanguage: 'pt'
     });
@@ -75,7 +75,7 @@ function _extrairTextoPdf(pdfBlob, nomeArquivo) {
   } finally {
     if (docId) {
       try {
-        Drive.Files.remove(docId);
+        Drive_OCR.Files.remove(docId);
         Logger.log(`[OCR] Doc temporário removido. ID: ${docId}`);
       } catch (errRemocao) {
         Logger.log(`[OCR] AVISO: falha ao remover Doc temporário (ID: ${docId}): ${errRemocao.message}`);
