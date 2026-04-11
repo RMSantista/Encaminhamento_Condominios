@@ -7,14 +7,14 @@ domains:
     load_order: [tooling-clasp, setup-clasp, github-setup, setup-triggers]
 
   core-logic:
-    description: "A lógica de negócio do repasse e do alerta"
-    fragments: [config-spec, repasse-spec, alerta-spec, email-spec, pdf-strategy, idempotency-decision]
+    description: "A lógica de negócio do repasse, fluxo manual, OCR e alerta"
+    fragments: [config-spec, repasse-spec, alerta-spec, email-spec, pdf-strategy, idempotency-decision, ocr-spec, manual-spec, log-spec]
     entry_point: config-spec
-    load_order: [config-spec, idempotency-decision, pdf-strategy, email-spec, repasse-spec, alerta-spec]
+    load_order: [config-spec, idempotency-decision, pdf-strategy, ocr-spec, log-spec, email-spec, repasse-spec, manual-spec, alerta-spec]
 
   quality:
     description: "Testes e validação antes de colocar em produção"
-    fragments: [testing, config-spec, repasse-spec, alerta-spec]
+    fragments: [testing, config-spec, repasse-spec, alerta-spec, manual-spec]
     entry_point: testing
 
 relationships:
@@ -39,15 +39,58 @@ relationships:
     type: depends_on
     note: "O corpo e assunto do e-mail são definidos na email-spec"
 
+  - from: repasse-spec
+    to: ocr-spec
+    type: depends_on
+    note: "extrairDadosBoleto() fornece mesRef e valorId para o label e idempotência"
+
+  - from: repasse-spec
+    to: log-spec
+    type: depends_on
+    note: "registrarLog() chamado em cada ação relevante"
+
+  - from: manual-spec
+    to: config-spec
+    type: depends_on
+
+  - from: manual-spec
+    to: ocr-spec
+    type: depends_on
+    note: "OCR em cada PDF da pasta manual"
+
+  - from: manual-spec
+    to: idempotency-decision
+    type: depends_on
+    note: "Label flutuante — mesma lógica de prefixo, sem thread"
+
+  - from: manual-spec
+    to: email-spec
+    type: depends_on
+    note: "Mesmo e-mail de repasse dos dois fluxos"
+
+  - from: manual-spec
+    to: log-spec
+    type: depends_on
+
   - from: alerta-spec
     to: config-spec
     type: depends_on
-    note: "CONTRATO_FIM e credenciais vêm do config"
+    note: "CONTRATO_FIM, DIAS_VERIFICACAO, DIA_ALERTA vêm do config"
 
   - from: alerta-spec
     to: idempotency-decision
     type: depends_on
-    note: "Alerta verifica a ausência do label de repasse"
+    note: "Alerta verifica ausência de label de mês (prefixo sem valorId)"
+
+  - from: ocr-spec
+    to: config-spec
+    type: depends_on
+    note: "Drive_OCR é serviço avançado configurado no projeto"
+
+  - from: log-spec
+    to: config-spec
+    type: depends_on
+    note: "PASTA_MANUAL_ID e LOG_PLANILHA_NOME vêm do config"
 
   - from: setup-clasp
     to: tooling-clasp
@@ -57,24 +100,26 @@ relationships:
   - from: setup-triggers
     to: repasse-spec
     type: references
-    note: "Os triggers chamam as funções definidas nas specs"
-
   - from: setup-triggers
     to: alerta-spec
+    type: references
+  - from: setup-triggers
+    to: manual-spec
     type: references
 
   - from: testing
     to: repasse-spec
     type: validates
-
   - from: testing
     to: alerta-spec
     type: validates
-
+  - from: testing
+    to: manual-spec
+    type: validates
   - from: testing
     to: config-spec
     type: references
-    note: "DRY_RUN flag fica no config"
+    note: "DRY_RUN e DESTINO_IMOBILIARIA de teste ficam no config"
 
 task_routing:
   "primeiro setup do projeto":
@@ -83,21 +128,31 @@ task_routing:
 
   "implementar repassarBoleto":
     domain: core-logic
-    fragments: [config-spec, pdf-strategy, idempotency-decision, email-spec, repasse-spec]
+    fragments: [config-spec, pdf-strategy, idempotency-decision, ocr-spec, email-spec, repasse-spec, log-spec]
 
   "implementar verificarPendencia":
     domain: core-logic
     fragments: [config-spec, idempotency-decision, alerta-spec]
+
+  "implementar fluxo manual":
+    domain: core-logic
+    fragments: [config-spec, ocr-spec, idempotency-decision, email-spec, manual-spec, log-spec]
+
+  "implementar OCR":
+    fragments: [ocr-spec, pdf-strategy]
 
   "configurar triggers":
     fragments: [setup-triggers]
 
   "escrever testes":
     domain: quality
-    fragments: [testing, config-spec, repasse-spec]
+    fragments: [testing, config-spec, repasse-spec, manual-spec]
 
   "preparar para o GitHub":
     fragments: [github-setup, tooling-clasp]
 
   "deploy e validação final":
     fragments: [setup-triggers, testing]
+
+  "dúvida sobre labels ou idempotência":
+    fragments: [idempotency-decision, repasse-spec]

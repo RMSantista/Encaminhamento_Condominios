@@ -1,12 +1,12 @@
 schema_version: "1.0.0"
 
 project:
-  name: "boleto-condominio-automation"
-  description: "Google Apps Script que detecta boleto da Premier no Gmail, baixa o PDF e repassa para a Pirâmid Imóveis com alerta de não-recebimento"
-  tech_stack: [google-apps-script, clasp, javascript, gmail-api, github]
+  name: "Encaminhamento_Condominios"
+  description: "Google Apps Script que monitora Gmail e Drive, detecta boleto mensal da Premier, extrai dados via OCR e repassa para a Pirâmid Imóveis com controle de idempotência, log em Sheets e alerta de não-recebimento"
+  tech_stack: [google-apps-script, clasp, javascript, gmail-api, drive-api-v2, google-sheets, github]
   language: pt-BR
 
-last_indexed: "2026-04-10T00:00:00Z"
+last_indexed: "2026-04-11T00:00:00Z"
 
 fragments:
 
@@ -25,65 +25,65 @@ fragments:
 
   - id: "pdf-strategy"
     type: decision
-    title: "Estratégia de download do PDF do boleto"
-    summary: "O botão no e-mail da Premier gera um link direto para PDF (não portal autenticado). Estratégia: extrair href do botão via regex no HTML do e-mail, baixar com UrlFetchApp, anexar ao e-mail de repasse como Blob"
-    tags: [pdf, premier, gmail, urlfetch, blob]
-    token_count: 280
+    title: "Estratégia de download e extração do PDF do boleto"
+    summary: "Fluxo por e-mail: extrair href do botão via regex, baixar com UrlFetchApp. Fluxo manual: ler da pasta Drive. Em ambos os casos, extrair dados via OCR (Drive API v2). Regex primária busca anchor text 'Ver boleto'; fallback busca .pdf no href"
+    tags: [pdf, premier, gmail, urlfetch, blob, ocr, drive]
+    token_count: 320
     path: ".ica/fragments/decisions/pdf-strategy.md"
     dependencies: []
     priority: high
-    last_modified: "2026-04-10"
+    last_modified: "2026-04-11"
 
   - id: "idempotency-decision"
     type: decision
-    title: "Controle de idempotência via Gmail labels"
-    summary: "Para garantir que o repasse nunca seja feito duas vezes no mesmo mês, usamos labels do Gmail como estado persistente: 'Condominio/Repassado-YYYY-MM'. Verificar label antes de agir; criar label após envio bem-sucedido"
-    tags: [idempotencia, gmail-labels, estado, segurança]
-    token_count: 240
+    title: "Controle de idempotência via Gmail labels com valorId"
+    summary: "Labels com formato Condomínio_{mesRef}-{valorId}_{Enc|Reenc}_em_{data}_{E|P} garantem idempotência cruzada entre fluxo e-mail e fluxo manual. valorId é o valor do boleto sem separadores usado como ID único. Helpers construirLabel/Prefixo/labelExiste em escopo global"
+    tags: [idempotencia, gmail-labels, estado, segurança, valorId, enc-reenc]
+    token_count: 380
     path: ".ica/fragments/decisions/idempotency-decision.md"
     dependencies: []
     priority: high
-    last_modified: "2026-04-10"
+    last_modified: "2026-04-11"
 
   # ── SPECIFICATIONS ──────────────────────────────────────────────────────────
 
   - id: "config-spec"
     type: specification
     title: "Parâmetros de configuração (config.js)"
-    summary: "Todas as constantes do projeto: REMETENTE_PREMIER, ASSUNTO_PREMIER, DESTINO_IMOBILIARIA, LABEL_BASE, CONTRATO_FIM, TIMEZONE. Nenhuma string de negócio pode aparecer fora deste arquivo"
+    summary: "Todas as constantes do projeto: REMETENTE_PREMIER, DESTINO_IMOBILIARIA, LABEL_PREFIXO, CONTRATO_FIM, DRY_RUN, DIAS_VERIFICACAO, DIA_ALERTA, REPASSE_MES_INICIO, PASTA_MANUAL_ID, DIAS_VERIFICACAO_MANUAL, LOG_PLANILHA_NOME. Nenhuma string de negócio fora deste arquivo"
     tags: [config, constantes, parametros, contrato]
-    token_count: 380
+    token_count: 420
     path: ".ica/fragments/specifications/config-spec.md"
     dependencies: []
     priority: high
-    last_modified: "2026-04-10"
+    last_modified: "2026-04-11"
 
   - id: "repasse-spec"
     type: specification
-    title: "Especificação de repassarBoleto()"
-    summary: "Função principal: busca e-mail da Premier no mês corrente, extrai link do PDF, baixa o arquivo, envia para a imobiliária com assunto/corpo padronizados, aplica label de controle. Roda via trigger diário"
-    tags: [repasse, gmail, pdf, trigger, logica-principal]
-    token_count: 620
+    title: "Especificação de repassarBoleto() — fluxo por e-mail"
+    summary: "Loop de REPASSE_MES_INICIO até mês atual; filtra meses sem label; para cada pendente chama _repassarMes(): busca e-mail Premier, baixa PDF, OCR, guard de idempotência por valorId, envia, cria label. Helpers _gerarListaMeses e _repassarMes extraídos para clareza"
+    tags: [repasse, gmail, pdf, trigger, loop, ocr, valorId]
+    token_count: 520
     path: ".ica/fragments/specifications/repasse-spec.md"
-    dependencies: [config-spec, pdf-strategy, idempotency-decision, email-spec]
+    dependencies: [config-spec, pdf-strategy, idempotency-decision, email-spec, ocr-spec, log-spec]
     priority: high
-    last_modified: "2026-04-10"
+    last_modified: "2026-04-11"
 
   - id: "alerta-spec"
     type: specification
     title: "Especificação de verificarPendencia()"
-    summary: "Função de guarda: roda nos dias 8, 9 e 10 de cada mês. Se não existir label de repasse do mês corrente, envia e-mail de alerta ao dono da conta. Aborta silenciosamente após CONTRATO_FIM"
-    tags: [alerta, pendencia, trigger, dias-8-10]
-    token_count: 340
+    summary: "Roda nos dias 8, 9 e 10. Dias 8-9: log silencioso apenas. Dia 10 ao meio-dia: envia alerta se não existir label do mês corrente. Checa prefixo de mês sem valorId (qualquer repasse do mês basta)"
+    tags: [alerta, pendencia, trigger, dia-10, meio-dia]
+    token_count: 360
     path: ".ica/fragments/specifications/alerta-spec.md"
     dependencies: [config-spec, idempotency-decision]
     priority: high
-    last_modified: "2026-04-10"
+    last_modified: "2026-04-11"
 
   - id: "email-spec"
     type: specification
     title: "Especificação do e-mail de repasse"
-    summary: "Remetente: conta ativa do Gmail. Destinatário: administrativo@piramidimoveis.com.br. Assunto: 'Ajuste de Condomínio'. Corpo com A/C Mariana, competência do condomínio (mês X) e aluguel (mês X+1). PDF como anexo"
+    summary: "Destinatário: DESTINO_IMOBILIARIA. Assunto: 'Ajuste de Condomínio'. Corpo com A/C Mariana, competência mês X e aluguel mês X+1. PDF como anexo. Válido para ambos os fluxos (e-mail e manual)"
     tags: [email, assunto, corpo, competencia, imobiliaria]
     token_count: 290
     path: ".ica/fragments/specifications/email-spec.md"
@@ -91,13 +91,46 @@ fragments:
     priority: high
     last_modified: "2026-04-10"
 
+  - id: "ocr-spec"
+    type: specification
+    title: "Especificação do módulo OCR — src/ocr.js"
+    summary: "Usa Drive API v2 (Drive_OCR) para converter PDF → Google Doc temporário, extrai texto e apaga o Doc no finally. Regex para Premier, vencimento e valor. valorId = valor sem separadores. Em falha: envia alerta por e-mail, não remove arquivo, lança erro"
+    tags: [ocr, pdf, drive-api, premier, parsing, valorId]
+    token_count: 380
+    path: ".ica/fragments/specifications/ocr-spec.md"
+    dependencies: [config-spec]
+    priority: high
+    last_modified: "2026-04-11"
+
+  - id: "manual-spec"
+    type: specification
+    title: "Especificação do fluxo manual — src/manual.js"
+    summary: "Processa PDFs depositados na pasta Drive (WhatsApp). Age dias 10-13. OCR em cada arquivo, agrupa por (mesRef+valorId), ordena por vencimento, envia um por grupo, move todos para lixeira. Label flutuante sem thread. Enc ou Reenc conforme label existente"
+    tags: [manual, drive, pasta, whatsapp, duplicata, reenvio, flutuante]
+    token_count: 440
+    path: ".ica/fragments/specifications/manual-spec.md"
+    dependencies: [config-spec, ocr-spec, idempotency-decision, email-spec, log-spec]
+    priority: high
+    last_modified: "2026-04-11"
+
+  - id: "log-spec"
+    type: specification
+    title: "Especificação do módulo de log — src/log.js"
+    summary: "registrarLog() grava em Google Sheets criada automaticamente em PASTA_MANUAL_ID. ID da planilha persiste em PropertiesService. Colunas: Timestamp, Função, MesRef, ValorId, Arquivo, Ação, Origem, Detalhes. Erros nunca propagam para o chamador"
+    tags: [log, planilha, sheets, auditoria, properties-service]
+    token_count: 300
+    path: ".ica/fragments/specifications/log-spec.md"
+    dependencies: [config-spec]
+    priority: medium
+    last_modified: "2026-04-11"
+
   # ── GUIDES ──────────────────────────────────────────────────────────────────
 
   - id: "setup-clasp"
     type: guide
     title: "Setup do ambiente: clasp + GAS"
-    summary: "Passo a passo completo: instalar Node.js, instalar clasp, fazer clasp login, criar projeto GAS em script.google.com, obter scriptId, rodar clasp clone, verificar estrutura local. Inclui solução de problemas comuns"
-    tags: [setup, clasp, node, instalação, primeiro-uso]
+    summary: "Passo a passo completo: instalar Node.js, instalar clasp, fazer clasp login, criar projeto GAS em script.google.com, obter scriptId, rodar clasp clone, habilitar Drive API v2 com identificador Drive_OCR, verificar estrutura local"
+    tags: [setup, clasp, node, instalação, primeiro-uso, drive-api]
     token_count: 580
     path: ".ica/fragments/guides/setup-clasp.md"
     dependencies: [tooling-clasp]
@@ -107,8 +140,8 @@ fragments:
   - id: "github-setup"
     type: guide
     title: "Setup do repositório GitHub"
-    summary: "Criar repo, configurar .gitignore (excluir .clasp.json com scriptId), estrutura de pastas src/, conteúdo do README.md profissional para portfólio. Inclui badges e seção de arquitetura"
-    tags: [github, git, repositorio, gitignore, readme, portfolio]
+    summary: "Criar repo Encaminhamento_Condominios, configurar .gitignore (excluir .clasp.json com scriptId), estrutura de pastas src/, branch main como principal"
+    tags: [github, git, repositorio, gitignore, readme]
     token_count: 490
     path: ".ica/fragments/guides/github-setup.md"
     dependencies: [tooling-clasp]
@@ -117,22 +150,22 @@ fragments:
 
   - id: "setup-triggers"
     type: guide
-    title: "Configuração dos triggers no GAS"
-    summary: "Como criar os dois triggers via UI do GAS ou via código (installTriggers()): trigger diário para repassarBoleto() e trigger mensal nos dias 8-10 para verificarPendencia(). Inclui o código de setup dos triggers"
-    tags: [triggers, agendamento, gas, setup]
+    title: "Configuração dos 5 triggers no GAS"
+    summary: "installTriggers() cria 5 triggers: repassarBoleto@16h, verificarPendencia@12h, verificarPastaManual@8h/12h/16h. Lógica de quando agir fica no código. Sequência de autorização OAuth na primeira execução"
+    tags: [triggers, agendamento, gas, setup, installTriggers]
     token_count: 410
     path: ".ica/fragments/guides/setup-triggers.md"
-    dependencies: [repasse-spec, alerta-spec]
+    dependencies: [repasse-spec, alerta-spec, manual-spec]
     priority: high
-    last_modified: "2026-04-10"
+    last_modified: "2026-04-11"
 
   - id: "testing"
     type: guide
     title: "Como testar o projeto"
-    summary: "Estratégia de testes: funções de teste unitário no GAS (testExtrairLink, testBaixarPdf, testCorpoEmail), como simular execução sem enviar e-mail real (DRY_RUN flag em config), como verificar logs no clasp e no GAS, checklist de validação pré-deploy"
-    tags: [testes, dry-run, validação, logs, qualidade]
+    summary: "DRY_RUN simula sem enviar nem criar labels. DESTINO_IMOBILIARIA de teste para e-mails reais controlados. Checklist cobre fluxo e-mail, fluxo manual/pasta, alerta de pendência e montagem de e-mail. Planilha de log como auditoria pós-execução"
+    tags: [testes, dry-run, validação, logs, qualidade, checklist]
     token_count: 460
     path: ".ica/fragments/guides/testing.md"
-    dependencies: [config-spec, repasse-spec, alerta-spec]
+    dependencies: [config-spec, repasse-spec, alerta-spec, manual-spec]
     priority: medium
-    last_modified: "2026-04-10"
+    last_modified: "2026-04-11"

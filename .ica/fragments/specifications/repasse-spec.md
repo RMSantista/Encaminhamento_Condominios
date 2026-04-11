@@ -3,108 +3,76 @@ id: repasse-spec
 type: specification
 title: "Especificação de repassarBoleto() — src/repasse.js"
 status: active
-tags: [repasse, gmail, pdf, trigger, logica-principal, orchestration]
+tags: [repasse, gmail, pdf, trigger, logica-principal, orchestration, loop, ocr]
 depends_on: [config-spec, pdf-strategy, idempotency-decision, email-spec]
 ---
 
 ## Responsabilidade
 
-Orquestrar o fluxo completo de repasse: detectar → verificar → baixar → enviar → marcar.
-Este arquivo chama funções de `gmail.js` e `pdf.js`; não implementa I/O diretamente.
+Orquestrar o repasse mensal: iterar de `REPASSE_MES_INICIO` até o mês atual,
+detectar meses ainda não processados e, para cada um, baixar o PDF via e-mail,
+extrair dados via OCR, enviar para a imobiliária e registrar o label de controle.
+
+Este arquivo chama funções de `gmail.js`, `pdf.js`, `ocr.js` e `log.js`;
+não implementa I/O diretamente.
 
 ## Fluxo completo
 
 ```
 repassarBoleto()
 │
-├── 1. Guard: contrato expirado? → return (log)
-├── 2. Guard: já repassado este mês (label)? → return (log)
-├── 3. Buscar thread da Premier no mês corrente
-│       └── não encontrou? → return (log "boleto não chegou ainda")
-├── 4. Extrair link do PDF do e-mail       [gmail.js]
-│       └── falhou regex? → throw erro
-├── 5. Baixar PDF como Blob                [pdf.js]
-│       └── HTTP != 200? → throw erro
-├── 6. Montar corpo do e-mail              [email-spec]
+├── 1. Guard: contrato expirado? → return
+├── 2. Gerar lista de meses [REPASSE_MES_INICIO … mês atual]
+├── 3. Filtrar meses sem label → mesesPendentes
+│       └── nenhum pendente? → return ("todos processados")
+└── 4. Para cada mes em mesesPendentes → _repassarMes(mes)
+
+_repassarMes(mesRef)
+│
+├── 1. Buscar thread da Premier no Gmail para o mês
+│       └── não encontrou? → return ("não chegou ainda")
+├── 2. Extrair link do PDF do HTML do e-mail         [gmail.js]
+├── 3. Baixar PDF como Blob                          [pdf.js]
+├── 4. Extrair dados via OCR                         [ocr.js]
+│       └── erro OCR? → registrarLog(ErrOCR) + return
+├── 5. Guard idempotência por valorId (prefixo completo)
+│       └── label existe? → registrarLog(Skip) + return
+├── 6. Montar corpo do e-mail                        [email-spec]
 ├── 7. Enviar e-mail (ou DRY_RUN log)
-└── 8. Aplicar label de controle           [idempotency-decision]
+└── 8. Criar label + registrarLog(Enc)               [idempotency-decision]
 ```
 
-## Implementação de `src/repasse.js`
+## Dados extraídos pelo OCR
+
+O OCR retorna `{ mesRef, valorId, vencimento, valor }` onde:
+- `mesRef` — `'YYYY-MM'` derivado da data de vencimento (ex: `'2026-04'`)
+- `valorId` — valor sem separadores, usado como ID único (ex: `'59372'`)
+- `vencimento` — `'DD/MM/AAAA'`
+- `valor` — formato original (ex: `'593,72'`)
+
+## Helpers de label (escopo global GAS)
+
+Declarados em `repasse.js`, usados também por `manual.js` e `alerta.js`:
 
 ```javascript
-function repassarBoleto() {
-  // Guard 1: contrato
-  if (new Date() > new Date(CONTRATO_FIM)) {
-    Logger.log('Contrato encerrado. repassarBoleto() abortado.');
-    return;
-  }
+// Nome completo: Condomínio_2026-04-59372_Enc_em_2026-04-10_E
+construirLabel(mesRef, valorId, tipo, origem)
 
-  const hoje    = new Date();
-  const mesRef  = Utilities.formatDate(hoje, TIMEZONE, 'yyyy-MM');
-  const labelNome = `${LABEL_BASE}-${mesRef}`;
+// Prefixo de busca (cobre E e P do mesmo boleto)
+construirPrefixo(mesRef, valorId)  // → "Condomínio_2026-04-59372"
 
-  // Guard 2: idempotência
-  if (GmailApp.getUserLabelByName(labelNome)) {
-    Logger.log(`Boleto de ${mesRef} já repassado. Nenhuma ação.`);
-    return;
-  }
+// Verifica se existe qualquer label com o prefixo dado
+labelExiste(prefixo)               // → boolean
+```
 
-  // Busca
-  const threads = buscarBoletoPremer(mesRef);   // gmail.js
-  if (!threads.length) {
-    Logger.log(`Boleto da Premier de ${mesRef} não encontrado ainda.`);
-    return;
-  }
+## Helpers internos
 
-  const thread = threads[0];
-  const html   = thread.getMessages().pop().getBody();
+```javascript
+// Gera ['2026-02', '2026-03', '2026-04'] dado início e fim
+_gerarListaMeses(inicio, fim)
 
-  // PDF
-  const linkPdf = extrairLinkBoleto(html);      // gmail.js
-  const pdfBlob = baixarPdf(linkPdf);           // pdf.js
-
-  // E-mail
-  const { assunto, corpo } = montarEmailRepasse(mesRef);  // repasse.js (local)
-
-  if (DRY_RUN) {
-    Logger.log(`[DRY_RUN] Enviaria para ${DESTINO_IMOBILIARIA}: "${assunto}"`);
-    Logger.log(`[DRY_RUN] Corpo: ${corpo}`);
-  } else {
-    GmailApp.sendEmail(DESTINO_IMOBILIARIA, assunto, corpo, {
-      attachments: [pdfBlob],
-      name: 'Automação Condomínio'
-    });
-    Logger.log(`Boleto de ${mesRef} repassado com sucesso para ${DESTINO_IMOBILIARIA}`);
-
-    // Aplica label apenas após envio confirmado
-    const label = GmailApp.getUserLabelByName(labelNome)
-      || GmailApp.createLabel(labelNome);
-    label.addToThread(thread);
-  }
-}
-
-function montarEmailRepasse(mesRef) {
-  const [ano, mes]    = mesRef.split('-').map(Number);
-  const proxMes       = mes === 12 ? `${ano + 1}-01` : `${ano}-${String(mes + 1).padStart(2, '0')}`;
-  const nomeMes       = nomeMesPortugues(mes);
-  const nomeProxMes   = nomeMesPortugues(mes === 12 ? 1 : mes + 1);
-  const anoProxMes    = mes === 12 ? ano + 1 : ano;
-
-  const corpo = `A/C Mariana - Setor de Proprietários.
-
-Segue boleto de condomínio com valor correto, referente à competência de ${nomeMes}/${ano}, para ser lançado no aluguel de ${nomeProxMes}/${anoProxMes}.
-
-Atenciosamente.`;
-
-  return { assunto: ASSUNTO_REPASSE, corpo };
-}
-
-function nomeMesPortugues(mes) {
-  const nomes = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
-                 'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
-  return nomes[mes - 1];
-}
+// Lógica de um único mês (extraída para reuso e clareza)
+_repassarMes(mesRef)
 ```
 
 ## Onde ficam as funções auxiliares
@@ -114,4 +82,7 @@ function nomeMesPortugues(mes) {
 | `buscarBoletoPremer(mesRef)` | `src/gmail.js` |
 | `extrairLinkBoleto(html)` | `src/gmail.js` |
 | `baixarPdf(url)` | `src/pdf.js` |
+| `extrairDadosBoleto(pdfBlob, nome)` | `src/ocr.js` |
+| `registrarLog(params)` | `src/log.js` |
 | `montarEmailRepasse(mesRef)` | `src/repasse.js` (local) |
+| `nomeMesPortugues(mes)` | `src/repasse.js` (local) |
