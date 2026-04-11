@@ -1,23 +1,48 @@
 /**
- * Função principal: detecta boleto da Premier no Gmail e repassa para a imobiliária.
- * Roda via trigger diário. Idempotente via Gmail labels.
- *
- * @param {string} [mesOverride] - Opcional. Formato 'yyyy-MM'. Usar para reprocessar
- *   meses retroativos manualmente (ex: repassarBoleto('2026-02')). Se omitido,
- *   usa o mês atual — comportamento normal do trigger.
+ * Função principal: itera de REPASSE_MES_INICIO até o mês atual e repassa o
+ * boleto da Premier para cada mês ainda não processado. Roda via trigger diário.
+ * Idempotente via Gmail labels.
  */
-function repassarBoleto(mesOverride) {
+function repassarBoleto() {
   // Guard: contrato
   if (new Date() > new Date(CONTRATO_FIM)) {
     Logger.log('Contrato encerrado. repassarBoleto() abortado.');
     return;
   }
 
-  // Busca e-mail Premier do mês indicado (ou mês atual pelo trigger)
-  const mesAtual = mesOverride || Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM');
-  const threads  = buscarBoletoPremer(mesAtual);
+  const mesAtual    = Utilities.formatDate(new Date(), TIMEZONE, 'yyyy-MM');
+  const todosMeses  = _gerarListaMeses(REPASSE_MES_INICIO, mesAtual);
+
+  // Filtra meses sem nenhum label (nem E nem P)
+  const mesesPendentes = todosMeses.filter(
+    mes => !labelExiste(`${LABEL_PREFIXO}_${mes}-`)
+  );
+
+  if (!mesesPendentes.length) {
+    Logger.log('repassarBoleto: todos os meses já processados.');
+    return;
+  }
+
+  Logger.log(`repassarBoleto: ${mesesPendentes.length} mês(es) pendente(s): ${mesesPendentes.join(', ')}`);
+
+  for (const mes of mesesPendentes) {
+    _repassarMes(mes);
+  }
+}
+
+/**
+ * Processa o repasse de um único mês.
+ * Busca o e-mail da Premier, extrai o PDF via OCR, verifica idempotência
+ * pelo valorId e envia para a imobiliária.
+ *
+ * @param {string} mesRef - formato 'yyyy-MM'
+ */
+function _repassarMes(mesRef) {
+  Logger.log(`_repassarMes: processando ${mesRef}`);
+
+  const threads = buscarBoletoPremer(mesRef);
   if (!threads.length) {
-    Logger.log(`Boleto da Premier de ${mesAtual} não encontrado ainda.`);
+    Logger.log(`_repassarMes: boleto da Premier de ${mesRef} não encontrado ainda.`);
     return;
   }
 
@@ -29,10 +54,10 @@ function repassarBoleto(mesOverride) {
   // OCR: extrai mesRef e valorId reais do boleto
   let dados;
   try {
-    dados = extrairDadosBoleto(pdfBlob, `e-mail Premier ${mesAtual}`);
+    dados = extrairDadosBoleto(pdfBlob, `e-mail Premier ${mesRef}`);
   } catch (e) {
-    Logger.log(`repassarBoleto: erro OCR — ${e.message}`);
-    registrarLog({ funcao: 'repassarBoleto', mesRef: mesAtual, acao: 'ErrOCR', origem: 'E', detalhes: e.message });
+    Logger.log(`_repassarMes: erro OCR — ${e.message}`);
+    registrarLog({ funcao: 'repassarBoleto', mesRef, acao: 'ErrOCR', origem: 'E', detalhes: e.message });
     return;
   }
 
@@ -64,6 +89,26 @@ function repassarBoleto(mesOverride) {
     Logger.log(`Label criado na thread: ${labelNome}`);
     registrarLog({ funcao: 'repassarBoleto', mesRef: dados.mesRef, valorId: dados.valorId, acao: 'Enc', origem: 'E', detalhes: 'OK' });
   }
+}
+
+/**
+ * Gera lista de meses 'yyyy-MM' de inicio até fim (inclusive).
+ *
+ * @param {string} inicio - formato 'yyyy-MM'
+ * @param {string} fim    - formato 'yyyy-MM'
+ * @returns {string[]}
+ */
+function _gerarListaMeses(inicio, fim) {
+  const meses = [];
+  let [ano, mes] = inicio.split('-').map(Number);
+  const [anoFim, mesFim] = fim.split('-').map(Number);
+
+  while (ano < anoFim || (ano === anoFim && mes <= mesFim)) {
+    meses.push(`${ano}-${String(mes).padStart(2, '0')}`);
+    if (++mes > 12) { mes = 1; ano++; }
+  }
+
+  return meses;
 }
 
 /**
