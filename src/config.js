@@ -28,7 +28,7 @@ const DIAS_VERIFICACAO = [8, 9, 10];  // verificarPendencia() verifica nesses di
 const DIA_ALERTA       = 10;          // alerta só é enviado a partir deste dia (ao meio-dia)
 
 // ── Repasse via e-mail (Premier → Imobiliária) ──────────────────
-const REPASSE_MES_INICIO = '2026-02'; // Primeiro mês a verificar no trigger de repasse
+const REPASSE_MES_INICIO = '2026-05'; // Primeiro mês a verificar no trigger de repasse
                                        // Alterar ao renovar contrato ou reiniciar ciclo
 
 // ── Fluxo manual (boleto via WhatsApp → pasta Drive) ────────────
